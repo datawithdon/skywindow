@@ -1,0 +1,12 @@
+{
+  "name": "skywindow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Should you go outside tonight? Stargazing and northern-lights score for your location. Static PWA.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "python3 -m http.server 8000 --bind 127.0.0.1"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://api.open-meteo.com https://geocoding-api.open-meteo.com https://services.swpc.noaa.gov; font-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; require-trusted-types-for 'script'; trusted-types skywindow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="SkyWindow: should you go outside tonight? A stargazing and northern-lights score for your location from cloud, moon, darkness and aurora forecasts. Free, no account.">
+  <meta name="theme-color" content="#0d1424">
+  <title>SkyWindow: tonight's stargazing and aurora odds</title>
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./"><img src="icons/icon.svg" alt="" class="brand-mark" width="28" height="28">SkyWindow</a>
+    <span id="place" class="place"></span>
+  </header>
+  <main id="view" tabindex="-1"><p class="muted center">Loading…</p></main>
+  <footer>
+    Forecasts: <a href="https://open-meteo.com" target="_blank" rel="noopener noreferrer">Open-Meteo</a> (CC BY 4.0) and
+    <a href="https://www.swpc.noaa.gov" target="_blank" rel="noopener noreferrer">NOAA Space Weather Prediction Center</a>.
+    Moon and sun positions are calculated on your device. Scores are a guide, not a guarantee.
+    <a href="https://github.com/datawithdon/skywindow" target="_blank" rel="noopener noreferrer">Source</a>
+  </footer>
+  <div id="tip" class="tip hidden" role="status" aria-live="polite"></div>
+  <noscript><p class="center">SkyWindow needs JavaScript.</p></noscript>
+</body>
+</html>
