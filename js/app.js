@@ -1,5 +1,5 @@
 // SkyWindow UI. All text goes through textContent / DOM APIs; no innerHTML.
-import { fetchForecast, fetchKp, fetchOvation, geocode, roundCoord, validLatLon, cleanText } from "./api.js";
+import { fetchForecast, fetchKp, fetchOvation, geocode, roundCoord, validLatLon, cleanText, cleanHours, cleanKp, validTz } from "./api.js";
 import { buildNights, scoreLabel, verdict, whatToSee, requiredKp, makeIcs, nightKey, SITES } from "./score.js";
 
 // Refuse to run inside another site's frame (GitHub Pages can't send frame-ancestors).
@@ -30,17 +30,12 @@ function loadPrefs() {
 }
 function loadCache(loc) {
   const v = store.get(KEYS.cache);
-  if (!v || !loc || v.lat !== loc.lat || v.lon !== loc.lon || !Number.isFinite(v.fetchedAt)) return null;
-  if (!v.forecast || typeof v.forecast.tz !== "string" || !Array.isArray(v.forecast.hours) || v.forecast.hours.length > 200) return null;
-  const n = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
-  const hours = v.forecast.hours.filter((h) => h && Number.isFinite(h.t)).map((h) => ({
-    t: h.t, cloud: n(h.cloud), low: n(h.low), mid: n(h.mid), high: n(h.high), temp: n(h.temp), feels: n(h.feels), wind: n(h.wind),
-  }));
-  let tz = "UTC";
-  try { new Intl.DateTimeFormat("en", { timeZone: v.forecast.tz }); tz = v.forecast.tz; } catch { /* keep UTC */ }
-  const kp = Array.isArray(v.kp) ? v.kp.filter((k) => k && Number.isFinite(k.t) && Number.isFinite(k.kp) && k.kp >= 0 && k.kp <= 9).slice(0, 500)
-    .map((k) => ({ t: k.t, kp: k.kp, kind: ["observed", "estimated", "predicted"].includes(k.kind) ? k.kind : "predicted" })) : [];
-  return { fetchedAt: v.fetchedAt, forecast: { tz, hours }, kp, kpError: !!v.kpError };
+  if (!v || typeof v !== "object" || !loc || v.lat !== loc.lat || v.lon !== loc.lon) return null;
+  // Saved data shares an origin with other github.io apps: rebuild it with the same checks as API data.
+  const fetchedAt = typeof v.fetchedAt === "number" && v.fetchedAt > 1e12 && v.fetchedAt <= Date.now() + 60000 ? v.fetchedAt : null;
+  const hours = cleanHours(v.forecast?.hours);
+  if (fetchedAt === null || !hours.length) return null;
+  return { fetchedAt, forecast: { tz: validTz(v.forecast.tz) || "UTC", hours }, kp: cleanKp(v.kp), kpError: v.kpError === true };
 }
 
 const state = {
@@ -102,8 +97,9 @@ async function refresh() {
   state.loading = true;
   state.error = null;
   render();
-  const [fc, kp] = await Promise.allSettled([fetchForecast(state.loc.lat, state.loc.lon, signal), fetchKp(signal)]);
-  if (signal.aborted) return;
+  const loc = state.loc;
+  const [fc, kp] = await Promise.allSettled([fetchForecast(loc.lat, loc.lon, signal), fetchKp(signal)]);
+  if (signal.aborted || state.loc !== loc) return;
   state.loading = false;
   if (fc.status === "fulfilled") {
     state.data = {
@@ -112,7 +108,7 @@ async function refresh() {
       kp: kp.status === "fulfilled" ? kp.value : (state.data?.kp || []),
       kpError: kp.status !== "fulfilled",
     };
-    store.set(KEYS.cache, { lat: state.loc.lat, lon: state.loc.lon, ...state.data });
+    store.set(KEYS.cache, { lat: loc.lat, lon: loc.lon, ...state.data });
   } else {
     state.error = navigator.onLine === false
       ? "You're offline. Showing the last forecast saved on this device."
@@ -125,7 +121,14 @@ async function refresh() {
 function computeNights() {
   if (!state.data) { state.nights = []; return; }
   const prevKey = state.nights[state.selected]?.key;
-  state.nights = buildNights(state.data.forecast, state.data.kp, { lat: state.loc.lat, lon: state.loc.lon, now: Date.now() });
+  try {
+    state.nights = buildNights(state.data.forecast, state.data.kp, { lat: state.loc.lat, lon: state.loc.lon, now: Date.now() });
+  } catch {
+    // Never leave the app stuck on bad data: drop it and fetch fresh.
+    state.nights = [];
+    state.data = null;
+    store.del(KEYS.cache);
+  }
   const idx = state.nights.findIndex((n) => n.key === prevKey);
   state.selected = idx >= 0 ? idx : 0;
 }
@@ -146,6 +149,18 @@ const view = document.getElementById("view");
 const placeEl = document.getElementById("place");
 
 function render() {
+  try { renderView(); } catch {
+    hideTip();
+    view.replaceChildren(h("div", { class: "card" },
+      h("p", {}, "Something went wrong showing this forecast."),
+      h("div", { class: "btn-row" }, h("button", {
+        class: "btn primary", type: "button",
+        onclick: () => { Object.values(KEYS).forEach((k) => store.del(k)); location.reload(); },
+      }, "Reset SkyWindow"))));
+  }
+}
+
+function renderView() {
   placeEl.textContent = state.loc ? state.loc.name : "";
   const kids = [];
   if (!state.loc) {
@@ -323,9 +338,13 @@ function auroraCard(n) {
     const o = state.ovation;
     const btn = h("button", { class: "btn", type: "button", disabled: o === "loading" }, o === "loading" ? "Checking…" : "Live check (NOAA OVATION, about 1 MB)");
     btn.addEventListener("click", async () => {
+      const loc = state.loc;
       state.ovation = "loading";
       render();
-      try { state.ovation = await fetchOvation(state.loc.lat, state.loc.lon); } catch { state.ovation = "error"; }
+      let result;
+      try { result = await fetchOvation(loc.lat, loc.lon); } catch { result = "error"; }
+      if (state.loc !== loc) return; // location changed while loading
+      state.ovation = result;
       render();
     });
     card.append(h("div", { class: "btn-row mt" }, btn));
@@ -451,7 +470,7 @@ function hourlyCard(n) {
 
 function settingsCard() {
   const siteSel = h("select", { id: "site" }, Object.entries(SITES).map(([k, v]) => h("option", { value: k, selected: k === state.prefs.site }, v)));
-  siteSel.addEventListener("change", () => { state.prefs.site = siteSel.value in SITES ? siteSel.value : "suburb"; store.set(KEYS.prefs, state.prefs); render(); });
+  siteSel.addEventListener("change", () => { state.prefs.site = Object.hasOwn(SITES, siteSel.value) ? siteSel.value : "suburb"; store.set(KEYS.prefs, state.prefs); render(); });
   const unitSel = h("select", { id: "units" },
     h("option", { value: "metric", selected: state.prefs.units === "metric" }, "°C, km/h"),
     h("option", { value: "imperial", selected: state.prefs.units === "imperial" }, "°F, mph"));
@@ -465,6 +484,7 @@ function settingsCard() {
       class: "btn", type: "button",
       onclick: () => {
         if (!confirm("Forget the saved location, settings and forecast on this device?")) return;
+        controller?.abort();
         Object.values(KEYS).forEach((k) => store.del(k));
         Object.assign(state, { loc: null, prefs: loadPrefs(), data: null, nights: [], selected: 0, ovation: null, error: null });
         render();

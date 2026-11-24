@@ -15,11 +15,26 @@ const MAX_BYTES = { forecast: 400_000, geocode: 100_000, kp: 100_000, ovation: 3
 export const roundCoord = (x) => Math.round(x * 100) / 100;
 
 async function getJson(url, maxBytes, signal) {
-  const res = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store", signal });
+  const res = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store", redirect: "error", signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const text = await res.text();
-  if (text.length > maxBytes) throw new Error("response too large");
-  return JSON.parse(text);
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > maxBytes) throw new Error("response too large");
+  // Stop reading as soon as the cap is passed instead of buffering an unbounded body.
+  if (!res.body) throw new Error("bad response");
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) { reader.cancel().catch(() => {}); throw new Error("response too large"); }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
+  return JSON.parse(new TextDecoder().decode(buf));
 }
 
 const num = (x, lo, hi) => (typeof x === "number" && Number.isFinite(x) && x >= lo && x <= hi ? x : null);
@@ -34,7 +49,7 @@ export function validLatLon(lat, lon) {
   return num(lat, -90, 90) !== null && num(lon, -180, 180) !== null;
 }
 
-function validTz(tz) {
+export function validTz(tz) {
   if (typeof tz !== "string" || !/^[A-Za-z_]+(?:\/[A-Za-z0-9_+\-]+){0,2}$|^GMT$|^UTC$/.test(tz)) return null;
   try { new Intl.DateTimeFormat("en", { timeZone: tz }); return tz; } catch { return null; }
 }
@@ -54,14 +69,43 @@ export function parseForecast(j) {
   const temp = col("temperature_2m", -90, 60);
   const feels = col("apparent_temperature", -100, 70);
   const wind = col("wind_speed_10m", 0, 400);
-  const hours = [];
-  times.forEach((t, i) => {
-    const sec = num(t, 1e9, 1e10);
-    if (sec === null) return;
-    hours.push({ t: sec * 1000, cloud: cloud[i], low: low[i], mid: mid[i], high: high[i], temp: temp[i], feels: feels[i], wind: wind[i] });
-  });
+  const hours = cleanHours(times.map((t, i) => ({
+    t: typeof t === "number" ? t * 1000 : null, cloud: cloud[i], low: low[i], mid: mid[i], high: high[i], temp: temp[i], feels: feels[i], wind: wind[i],
+  })));
   if (!hours.length) throw new Error("empty forecast");
   return { tz, hours };
+}
+
+/**
+ * Rebuild forecast hours (ms timestamps) from a fixed schema. Used for API
+ * responses and for the copy saved in localStorage, which shares an origin
+ * with other github.io apps and so is not trusted either.
+ */
+export function cleanHours(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const h of list.slice(0, 24 * 8)) {
+    if (!h || typeof h !== "object") continue;
+    const t = num(h.t, 1e12, 1e13); // 2001..2286
+    if (t === null || seen.has(t)) continue;
+    seen.add(t);
+    out.push({
+      t,
+      cloud: num(h.cloud, 0, 100), low: num(h.low, 0, 100), mid: num(h.mid, 0, 100), high: num(h.high, 0, 100),
+      temp: num(h.temp, -90, 60), feels: num(h.feels, -100, 70), wind: num(h.wind, 0, 400),
+    });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+/** Rebuild a saved Kp list (ms timestamps). */
+export function cleanKp(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 500).flatMap((k) => {
+    if (!k || num(k.t, 1e12, 1e13) === null || num(k.kp, 0, 9) === null) return [];
+    return [{ t: k.t, kp: k.kp, kind: ["observed", "estimated", "predicted"].includes(k.kind) ? k.kind : "predicted" }];
+  }).sort((a, b) => a.t - b.t);
 }
 
 export async function fetchForecast(lat, lon, signal) {
@@ -92,7 +136,7 @@ export function parseKp(j) {
     if (typeof kp === "string") kp = Number(kp);
     if (typeof tag !== "string" || !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(tag)) continue;
     const t = Date.parse(tag.replace(" ", "T") + (tag.length === 16 ? ":00Z" : "Z"));
-    if (!Number.isFinite(t) || num(kp, 0, 9) === null) continue;
+    if (num(t, 1e12, 1e13) === null || num(kp, 0, 9) === null) continue;
     out.push({ t, kp, kind: ["observed", "estimated", "predicted"].includes(kind) ? kind : "predicted" });
   }
   if (!out.length) throw new Error("empty kp");

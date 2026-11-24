@@ -66,3 +66,19 @@ test("helpers", () => {
   assert.equal(validLatLon(91, 0), false);
   assert.equal(validLatLon(45, -73), true);
 });
+
+test("cleanHours / cleanKp rebuild saved data and drop out-of-range values", async () => {
+  const { cleanHours, cleanKp } = await import("../js/api.js");
+  const h = cleanHours([
+    { t: 1e20, cloud: 5 }, { t: "x" }, null,
+    { t: 1795003600000, cloud: 1e308, temp: -5, extra: "<b>" },
+    { t: 1795000000000, cloud: 50 }, { t: 1795000000000, cloud: 60 },
+  ]);
+  assert.deepEqual(h.map((x) => x.t), [1795000000000, 1795003600000], "sorted, deduped, bad times dropped");
+  assert.equal(h[1].cloud, null);
+  assert.equal(h[1].extra, undefined);
+  assert.equal(cleanHours(new Array(5000).fill({ t: 1795000000000 })).length, 1);
+  assert.deepEqual(cleanHours("nope"), []);
+  assert.deepEqual(cleanKp([{ t: 1795000000000, kp: 3, kind: "<x>" }, { t: 1795000000000, kp: 1e9 }, { t: 1e20, kp: 2 }]),
+    [{ t: 1795000000000, kp: 3, kind: "predicted" }]);
+});
